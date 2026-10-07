@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Tuti Fruti Online</title>
+  <meta name="description" content="El clásico juego de palabras, ahora online. Crea una sala y juega con tus amigos." />
+  <meta name="theme-color" content="#ff5a5f" />
+  <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=Nunito:wght@500;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/styles.css" />
+  <script>
+    // Aplica el tema guardado antes de pintar (evita parpadeo)
+    try {
+      const t = localStorage.getItem('tf_theme');
+      if (t) document.documentElement.dataset.theme = t;
+    } catch (_) {}
+  </script>
+</head>
+<body>
+  <div class="bg-fruits" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <button class="brand" id="brandBtn" aria-label="Inicio">
+      <span class="brand-icon">🍉</span><span class="brand-text">Tuti Fruti</span>
+    </button>
+    <div class="topbar-actions">
+      <span class="room-chip hidden" id="roomChip"></span>
+      <span class="conn hidden" id="connBadge" title="Estado de conexión"><i></i><b>Conectado</b></span>
+      <button class="icon-btn" id="soundBtn" aria-label="Sonido">🔊</button>
+      <button class="icon-btn" id="themeBtn" aria-label="Modo claro / oscuro">🌙</button>
+    </div>
+  </header>
+
+  <main id="app" class="app"></main>
+
+  <div class="modal-backdrop hidden" id="modal">
+    <div class="modal card pop" role="dialog" aria-modal="true" id="modalBody"></div>
+  </div>
+  <div class="toast-wrap" id="toasts"></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/sounds.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
