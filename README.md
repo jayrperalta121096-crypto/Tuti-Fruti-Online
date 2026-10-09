@@ -31,7 +31,7 @@ npm install   # instala también socket.io-client para las pruebas
 npm test
 ```
 
-Simula 3 jugadores reales por WebSocket y comprueba todo el flujo (44 comprobaciones): crear sala, unir jugadores, expulsar, reconexión, iniciar, letra, respuestas privadas, ¡TIEMPO!, puntuación 10/5/0, impugnaciones, ranking, siguiente ronda, fin por tiempo, ganador, jugar nuevamente, seguridad y persistencia tras reiniciar el servidor.
+Simula 3 jugadores reales por WebSocket y comprueba todo el flujo (60 comprobaciones): crear sala, unir jugadores, expulsar, reconexión, iniciar, elección de letra por turnos, respuestas privadas, ¡TIEMPO!, puntuación 10/5/0, impugnaciones, anulación por el anfitrión, ranking, siguiente ronda, fin por tiempo, ganador, jugar nuevamente, seguridad y persistencia tras reiniciar el servidor.
 
 ---
 
@@ -80,15 +80,17 @@ Te da un enlace `https://….trycloudflare.com` que funciona mientras tu PC est�
 
 ## 3. Cómo se juega
 
-1. **Crear partida**: escribe tu nombre, elige avatar, rondas, tiempo, categorías (puedes activarlas, desactivarlas, ordenarlas y crear las tuyas) y las letras permitidas.
+1. **Crear partida**: escribe tu nombre, elige avatar, rondas, tiempo y categorías: Nombre, Apellido, Animal, Cosa, Color, Fruta o Verdura, País o Ciudad y Marca. Puedes activarlas, desactivarlas, ordenarlas y crear las tuyas.
 2. Comparte el **código** (📋 Copiar o 🔗 Compartir, que abre WhatsApp y otras apps en el celular). También se puede compartir el enlace directo `/?sala=CÓDIGO`.
 3. Los amigos entran con **Unirme**, el código y su nombre.
 4. El anfitrión (👑) presiona **INICIAR PARTIDA**. También puede expulsar jugadores y editar ajustes antes de empezar.
-5. Cuenta regresiva 3-2-1, aparece la **letra** y todos escriben.
-6. Quien termina presiona **🔴 ¡TIEMPO!** (con confirmación) y la ronda se cierra para todos. Si nadie lo presiona, termina al llegar a cero.
-7. **Resultados**: tabla comparativa con los puntos de cada respuesta, el total de la ronda y la **clasificación**.
-8. **Impugnar**: toca cualquier respuesta, elige "Impugnar respuesta" y todos votan ✅ / ❌.
-9. Al final aparece el **ganador**, con **Jugar nuevamente** (mismo grupo) o **Volver al inicio**.
+5. **Elegir la letra**: en cada ronda le toca a un jugador, por turnos. La toca en el tablero o la escribe y confirma. Las letras ya jugadas no se repiten. Si ese jugador se desconecta, el turno pasa al siguiente, y el anfitrión puede elegir en su lugar.
+6. Cuenta regresiva 3-2-1 ("Juan eligió la letra M") y todos escriben.
+7. Quien termina presiona **🔴 ¡TIEMPO!** (con confirmación) y la ronda se cierra para todos. Si nadie lo presiona, termina al llegar a cero.
+8. **Resultados**: tabla comparativa con los puntos de cada respuesta, el total de la ronda y la **clasificación**.
+9. **Impugnar**: toca cualquier respuesta, elige "Impugnar respuesta" y todos votan ✅ / ❌.
+10. **Anfitrión (👑)**: toca una palabra mal escrita o dudosa y elige **Anular** (no suma) o **Validar**. Su decisión es final y el total se recalcula al instante.
+11. Al final aparece el **ganador**, con **Jugar nuevamente** (mismo grupo) o **Volver al inicio**.
 
 ### Puntuación (calculada en el servidor)
 
@@ -96,7 +98,7 @@ Te da un enlace `https://….trycloudflare.com` que funciona mientras tu PC est�
 |---|---|
 | **10** | Respuesta válida que nadie más puso |
 | **5** | Respuesta válida que otro jugador también usó |
-| **0** | Vacía, no empieza con la letra, o rechazada por votación |
+| **0** | Vacía, no empieza con la letra, rechazada por votación o anulada por el anfitrión |
 
 Las respuestas se comparan sin distinguir mayúsculas ni tildes ("Perú" = "peru").
 
@@ -104,9 +106,9 @@ Las respuestas se comparan sin distinguir mayúsculas ni tildes ("Perú" = "peru
 
 1. Que no esté vacía.
 2. Que empiece con la letra de la ronda.
-3. Que corresponda a la categoría, según diccionarios en español (nombres, apellidos, animales, colores, frutas, verduras, países, ciudades, marcas y profesiones). Acepta plurales y errores de 1 letra.
+3. Que corresponda a la categoría, según diccionarios en español (nombres, apellidos, animales, colores, frutas y verduras, países y ciudades, marcas). Acepta plurales y errores de 1 letra.
 
-**Una palabra que el sistema no reconoce NO se elimina.** Se marca ⚠️ "por revisar" y cuenta como válida, salvo que alguien la impugne y la mayoría vote ❌. Si la votación empata, la respuesta se mantiene. Quien escribió la respuesta no puede votar. El anfitrión puede cerrar una votación, y al pasar de ronda se cierran todas las votaciones abiertas.
+**Una palabra que el sistema no reconoce NO se elimina.** Se marca ⚠️ "por revisar" y cuenta como válida, salvo que alguien la impugne y la mayoría vote ❌. Si la votación empata, la respuesta se mantiene. Quien escribió la respuesta no puede votar. El anfitrión puede anular o validar cualquier palabra directamente, y al pasar de ronda se cierran todas las votaciones abiertas.
 
 Para ampliar los diccionarios, edita `server/dictionaries.js`: son listas de palabras separadas por comas.
 
@@ -118,6 +120,7 @@ Para ampliar los diccionarios, edita `server/dictionaries.js`: son listas de pal
 tuti-fruti-online/
 ├── server/
 │   ├── index.js         Servidor HTTP (Express) + WebSockets (Socket.IO)
+│   ├── handlers.js      Eventos en tiempo real (crear, unirse, elegir letra, anular…)
 │   ├── game.js          Salas, máquina de estados, rondas, puntuación, impugnaciones
 │   ├── validation.js    Normalización y validación de respuestas
 │   ├── dictionaries.js  Listas de palabras por categoría
@@ -139,11 +142,12 @@ Se eligió una estructura **simple y estable**: un solo servidor Node, sin compi
 | Especificación | Implementación |
 |---|---|
 | LOBBY / WAITING_FOR_PLAYERS | `LOBBY` |
-| STARTING | `STARTING` (cuenta regresiva; la letra se oculta hasta que empieza) |
+| (elección de letra) | `CHOOSING_LETTER` (un jugador por turno elige la letra) |
+| STARTING | `STARTING` (cuenta regresiva con la letra elegida) |
 | PLAYING | `PLAYING` |
 | ROUND_FINISHED | `ROUND_FINISHED` (se bloquean las respuestas y se recogen las finales) |
 | SHOWING_RESULTS | `SHOWING_RESULTS` (respuestas, impugnaciones y clasificación) |
-| NEXT_ROUND | acción del anfitrión: vuelve a `STARTING` con la ronda siguiente |
+| NEXT_ROUND | acción del anfitrión: vuelve a `CHOOSING_LETTER` para la ronda siguiente |
 | FINAL_RESULTS | `FINAL_RESULTS` (ganador) |
 | GAME_FINISHED | "Volver al inicio" (salir) o "Jugar nuevamente" (vuelve a `LOBBY`) |
 
@@ -153,7 +157,7 @@ Se eligió una estructura **simple y estable**: un solo servidor Node, sin compi
 - Las respuestas de los demás **no se envían** a nadie hasta que la ronda termina y se puntúa.
 - Tras ¡TIEMPO! solo se acepta una entrega final por jugador. Se rechazan los cambios posteriores.
 - Cada jugador tiene un token secreto: nadie puede hacerse pasar por otro, y el expulsado no puede volver con su sesión.
-- Solo el anfitrión puede iniciar, avanzar, expulsar o cambiar ajustes. Si se desconecta, el rol pasa a otro jugador.
+- Solo el anfitrión puede iniciar, avanzar, expulsar, cambiar ajustes o anular/validar palabras. Solo el jugador de turno (o el anfitrión) puede elegir la letra. Si se desconecta, el rol pasa a otro jugador.
 - Se validan el código de sala, el estado, la ronda, el tiempo (con margen de 1,5 s por latencia), la longitud de los textos y un límite de mensajes por segundo.
 
 ### Conexión y recarga de página

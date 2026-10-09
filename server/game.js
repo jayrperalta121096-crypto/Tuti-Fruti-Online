@@ -7,6 +7,7 @@ const store = require('./store');
 // ---------------- Constantes ----------------
 const PHASES = {
   LOBBY: 'LOBBY', // = WAITING_FOR_PLAYERS
+  CHOOSING_LETTER: 'CHOOSING_LETTER', // un jugador (por turno) elige la letra
   STARTING: 'STARTING', // cuenta regresiva 3-2-1
   PLAYING: 'PLAYING',
   ROUND_FINISHED: 'ROUND_FINISHED', // recolectando respuestas finales
@@ -28,18 +29,14 @@ const DEFAULT_CATEGORIES = [
   { id: 'animal', name: 'Animal', dict: 'animal', active: true },
   { id: 'cosa', name: 'Cosa', dict: null, active: true },
   { id: 'color', name: 'Color', dict: 'color', active: true },
-  { id: 'fruta', name: 'Fruta', dict: 'fruta', active: true },
-  { id: 'verdura', name: 'Verdura', dict: 'verdura', active: true },
-  { id: 'pais', name: 'País', dict: 'pais', active: true },
-  { id: 'ciudad', name: 'Ciudad', dict: 'ciudad', active: true },
+  { id: 'fruta_verdura', name: 'Fruta o Verdura', dict: ['fruta', 'verdura'], active: true },
+  { id: 'pais_ciudad', name: 'País o Ciudad', dict: ['pais', 'ciudad'], active: true },
   { id: 'marca', name: 'Marca', dict: 'marca', active: true },
-  { id: 'profesion', name: 'Profesión', dict: 'profesion', active: false },
-  { id: 'pelicula', name: 'Película', dict: null, active: false },
 ];
 const BUILTIN = Object.fromEntries(DEFAULT_CATEGORIES.map((c) => [c.id, c]));
 
 const ALL_LETTERS = 'ABCDEFGHIJKLMNÑOPQRSTUVWXYZ'.split('');
-const DEFAULT_LETTERS = 'ABCDEFGHIJLMNOPRSTUV'.split('');
+const DEFAULT_LETTERS = ALL_LETTERS.slice(); // la letra la elige un jugador en cada ronda
 const AVATARS = ['🍎', '🍌', '🍇', '🍉', '🍓', '🍍', '🥭', '🍑', '🍒', '🥝', '🍋', '🥥', '🦊', '🐼', '🐸', '🐵', '🦁', '🐯', '🐨', '🐙', '🦄', '🐧', '🐢', '🦉'];
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
@@ -131,9 +128,7 @@ function sanitizeSettings(input = {}) {
   if (activeCount < 2) fail('Activa al menos 2 categorías.');
   if (activeCount > 15) fail('Máximo 15 categorías activas.');
 
-  const letters = Array.isArray(input.letters) ? input.letters : DEFAULT_LETTERS;
-  s.letters = ALL_LETTERS.filter((l) => letters.map((x) => String(x).toUpperCase()).includes(l));
-  if (s.letters.length < 3) fail('Selecciona al menos 3 letras.');
+  s.letters = DEFAULT_LETTERS.slice();
   return s;
 }
 
@@ -152,7 +147,6 @@ function totals(room) {
 function stateFor(room, pid) {
   const t = totals(room);
   const last = room.results[room.results.length - 1];
-  const showLetter = room.phase !== PHASES.STARTING;
   const cur = room.current;
   return {
     code: room.code,
@@ -165,6 +159,9 @@ function stateFor(room, pid) {
     totalRounds: room.settings.rounds,
     minPlayers: MIN_PLAYERS,
     maxPlayers: MAX_PLAYERS,
+    chooserId: room.phase === PHASES.CHOOSING_LETTER ? room.chooserId : null,
+    usedLetters: room.usedLetters,
+    allLetters: ALL_LETTERS,
     players: room.order
       .filter((id) => room.players[id])
       .map((id) => {
@@ -181,7 +178,8 @@ function stateFor(room, pid) {
       }),
     current: cur
       ? {
-          letter: showLetter ? cur.letter : null,
+          letter: cur.letter,
+          chosenBy: cur.chosenBy || null,
           startsAt: cur.startsAt,
           endsAt: cur.endsAt,
           categories: cur.categories,
@@ -245,6 +243,7 @@ function detachSocket(code, pid, socketId) {
     if (!room2 || !room2.players[pid] || room2.players[pid].status === 'connected') return;
     room2.players[pid].status = 'disconnected';
     if (room2.hostId === pid) transferHost(room2);
+    ensureChooser(room2);
     // Si estaban esperando respuestas finales, ya no esperar a este jugador
     maybeFinishCollect(room2);
     broadcast(room2);
@@ -361,6 +360,7 @@ function leave(room, pid) {
   }
   if (room.hostId === pid || !room.players[room.hostId]) transferHost(room);
   if (!room.players[room.hostId] && room.order.length) room.hostId = room.order[0];
+  ensureChooser(room);
   if (room.order.length === 0 || connectedPlayers(room).length === 0) {
     if (room.order.length === 0) deleteRoom(room.code);
   }
@@ -388,26 +388,50 @@ function startGame(room, pid) {
   room.round = 0;
   room.results = [];
   room.usedLetters = [];
-  startRound(room);
+  beginChoosing(room);
 }
 
-function pickLetter(room) {
-  let pool = room.settings.letters.filter((l) => !room.usedLetters.includes(l));
-  if (pool.length === 0) {
-    room.usedLetters = [];
-    pool = room.settings.letters.slice();
-  }
-  const letter = pool[crypto.randomInt(pool.length)];
-  room.usedLetters.push(letter);
-  return letter;
+// ---------- Elección de la letra (por turnos) ----------
+// En cada ronda le toca a un jugador distinto, siguiendo el orden de llegada.
+function beginChoosing(room) {
+  room.phase = PHASES.CHOOSING_LETTER;
+  room.current = null;
+  const list = room.order.map((id) => room.players[id]).filter((p) => p && p.status !== 'disconnected');
+  room.chooserId = list.length ? list[room.round % list.length].id : room.hostId;
+  broadcast(room);
 }
 
-function startRound(room) {
+// Si al que le toca elegir se desconecta, pasa el turno al siguiente conectado.
+function ensureChooser(room) {
+  if (!room || room.phase !== PHASES.CHOOSING_LETTER) return;
+  const ch = room.players[room.chooserId];
+  if (ch && ch.status !== 'disconnected') return;
+  const list = room.order.map((id) => room.players[id]).filter((p) => p && p.status !== 'disconnected');
+  if (!list.length) return;
+  const idx = room.order.indexOf(room.chooserId);
+  const next = list.find((p) => room.order.indexOf(p.id) > idx) || list[0];
+  room.chooserId = next.id;
+}
+
+function chooseLetter(room, pid, letter) {
+  if (room.phase !== PHASES.CHOOSING_LETTER) fail('Ahora no se está eligiendo la letra.');
+  if (pid !== room.chooserId && pid !== room.hostId) fail('No es tu turno de elegir la letra.');
+  const L = String(letter || '').trim().toUpperCase().charAt(0);
+  if (!ALL_LETTERS.includes(L)) fail('Elige una letra válida (A–Z o Ñ).');
+  if (room.usedLetters.length >= ALL_LETTERS.length) room.usedLetters = [];
+  if (room.usedLetters.includes(L)) fail(`La letra ${L} ya se jugó en esta partida. Elige otra.`);
+  room.usedLetters.push(L);
+  startRound(room, L, pid);
+}
+
+function startRound(room, letter, chosenBy) {
   room.round += 1;
+  room.chooserId = null;
   const now = Date.now();
   const startsAt = now + COUNTDOWN_MS;
   room.current = {
-    letter: pickLetter(room),
+    letter,
+    chosenBy,
     startsAt,
     endsAt: startsAt + room.settings.roundTime * 1000,
     categories: room.settings.categories.filter((c) => c.active).map((c) => ({ id: c.id, name: c.name, dict: c.dict })),
@@ -611,6 +635,26 @@ function closeChallenge(room, pid, { key }) {
   maybeCloseChallenge(room, result, key, true);
 }
 
+// El anfitrión puede anular (no suma) o validar cualquier respuesta escrita.
+function judgeAnswer(room, pid, { playerId, catId, valid }) {
+  requireHost(room, pid);
+  const result = currentResult(room);
+  const ans = result.answers[playerId] && result.answers[playerId][catId];
+  if (!ans) fail('Respuesta no encontrada.');
+  if (ans.status === 'empty') fail('Esa respuesta está vacía.');
+  const outcome = valid ? 'accepted' : 'rejected';
+  ans.status = outcome;
+  ans.judgedBy = 'host';
+  const key = `${playerId}|${catId}`;
+  const ch = result.challenges[key];
+  if (ch && ch.open) {
+    ch.open = false;
+    ch.outcome = outcome;
+    ch.byHost = true;
+  }
+  rescore(result);
+}
+
 function nextRound(room, pid) {
   requireHost(room, pid);
   if (room.phase !== PHASES.SHOWING_RESULTS) fail('Aún no se puede avanzar.');
@@ -621,7 +665,7 @@ function nextRound(room, pid) {
     room.current = null;
     broadcast(room);
   } else {
-    startRound(room);
+    beginChoosing(room);
   }
 }
 
@@ -634,6 +678,7 @@ function playAgain(room, pid) {
   room.results = [];
   room.usedLetters = [];
   room.current = null;
+  room.chooserId = null;
 }
 
 // ---------------- Arranque / limpieza ----------------
@@ -676,7 +721,8 @@ function cleanup() {
 function init(ioInstance) {
   io = ioInstance;
   restoreRooms();
-  setInterval(cleanup, 1000 * 60 * 5).unref();
+  const t = setInterval(cleanup, 1000 * 60 * 5);
+  if (t && t.unref) t.unref();
 }
 
 module.exports = {
@@ -700,6 +746,8 @@ module.exports = {
   kick,
   leave,
   startGame,
+  chooseLetter,
+  judgeAnswer,
   updateAnswers,
   stopRound,
   submitFinal,

@@ -241,6 +241,9 @@
 
   // ---------- Cambios de fase (sonidos y efectos) ----------
   function onPhaseChange(from, to) {
+    chooseOverride = false;
+    pickSel = '';
+    if (to === 'CHOOSING_LETTER' && S && S.chooserId === S.you) Sounds.play('results');
     lastTickSecond = null;
     lastCountdown = null;
     if (to !== 'FINAL_RESULTS') confettiDone = false;
@@ -296,6 +299,8 @@
     switch (S.phase) {
       case 'LOBBY':
         return renderLobby();
+      case 'CHOOSING_LETTER':
+        return renderChoosing();
       case 'STARTING':
         return renderStarting();
       case 'PLAYING':
@@ -310,7 +315,8 @@
 
   function setScreen(id, html) {
     app.dataset.screen = id;
-    app.innerHTML = `<section class="screen">${html}</section>`;
+    // Las pantallas con capa a pantalla completa no se desplazan al entrar (si no, la capa no queda centrada)
+    app.innerHTML = `<section class="screen${html.includes('class="overlay') ? ' still' : ''}">${html}</section>`;
     window.scrollTo({ top: 0 });
   }
 
@@ -334,7 +340,7 @@
         </div>
       </div>
       <div class="how-mini">
-        <div class="card"><span class="n">🔤</span>Todos reciben la misma letra</div>
+        <div class="card"><span class="n">🔤</span>Cada ronda, un jugador elige la letra</div>
         <div class="card"><span class="n">✍️</span>Completa cada categoría con esa letra</div>
         <div class="card"><span class="n">🔴</span>El primero en terminar grita ¡TIEMPO!</div>
       </div>`
@@ -355,7 +361,7 @@
       `<div class="howto"><h2>📖 ¿Cómo jugar?</h2>
       <ol>
         <li>Crea una partida y comparte el código con tus amigos.</li>
-        <li>En cada ronda aparece una letra al azar.</li>
+        <li>En cada ronda, un jugador elige o escribe la letra (por turnos).</li>
         <li>Escribe una palabra que empiece con esa letra en cada categoría.</li>
         <li>Cuando termines, presiona <b>¡TIEMPO!</b> y la ronda acaba para todos. Si nadie lo presiona, termina al llegar a cero.</li>
         <li>Se comparan las respuestas y se reparten los puntos:</li>
@@ -364,6 +370,7 @@
       <p><span class="pts p5">+5</span> respuesta válida repetida</p>
       <p><span class="pts p0">0</span> vacía, con otra letra o rechazada</p>
       <p>⚠️ Si el sistema no reconoce una palabra, <b>no se elimina</b>: cualquiera puede <b>impugnarla</b> y todos votan si vale.</p>
+      <p>👑 El anfitrión puede <b>anular</b> una palabra mal escrita (no suma) o <b>validar</b> una dudosa.</p>
       <div class="actions"><button class="btn primary" data-close>¡A jugar!</button></div></div>`,
       { wide: true }
     );
@@ -371,7 +378,7 @@
 
   // ---------- Formulario de ajustes (crear sala / editar en lobby) ----------
   function defaultForm() {
-    const last = LS.get('tf_last_settings');
+    const last = LS.get('tf_last_settings_v2');
     const cats = META.categories.map((c) => ({ id: c.id, name: c.name, active: c.active, custom: false }));
     const form = {
       name: LS.get('tf_name', ''),
@@ -380,9 +387,8 @@
       roundTime: 60,
       stopRequiresAll: true,
       categories: cats,
-      letters: META.defaultLetters.slice(),
     };
-    if (last) Object.assign(form, { rounds: last.rounds, roundTime: last.roundTime, stopRequiresAll: last.stopRequiresAll, categories: last.categories, letters: last.letters });
+    if (last) Object.assign(form, { rounds: last.rounds, roundTime: last.roundTime, stopRequiresAll: last.stopRequiresAll, categories: last.categories });
     return form;
   }
 
@@ -415,16 +421,7 @@
           <button type="button" class="btn small green" data-act="cat-add">＋</button>
         </div>
       </div>
-      <details class="adv">
-        <summary>🔤 Letras permitidas (${f.letters.length})</summary>
-        <div class="row" style="margin:8px 0">
-          <button type="button" class="btn tiny" data-act="letters-easy">Recomendadas</button>
-          <button type="button" class="btn tiny" data-act="letters-all">Todas</button>
-        </div>
-        <div class="letters">
-          ${META.allLetters.map((l) => `<button type="button" class="letter-opt ${f.letters.includes(l) ? 'on' : ''}" data-act="letter" data-l="${l}">${l}</button>`).join('')}
-        </div>
-      </details>
+
       <div class="toggle-row">
         <span>🔴 Exigir completar todo para decir ¡TIEMPO!</span>
         <label class="switch"><input type="checkbox" data-act="stopAll" ${f.stopRequiresAll ? 'checked' : ''}><span></span></label>
@@ -449,15 +446,8 @@
         if (f.categories.some((c) => c.name.toLowerCase() === name.toLowerCase())) return toast('Esa categoría ya existe', true);
         const id = 'c_' + Array.from(crypto.getRandomValues(new Uint8Array(4)), (x) => x.toString(16).padStart(2, '0')).join('');
         f.categories.push({ id, name: name.charAt(0).toUpperCase() + name.slice(1), active: true, custom: true });
-      } else if (act === 'letter') {
-        const l = b.dataset.l;
-        f.letters = f.letters.includes(l) ? f.letters.filter((x) => x !== l) : [...f.letters, l];
-      } else if (act === 'letters-easy') f.letters = META.defaultLetters.slice();
-      else if (act === 'letters-all') f.letters = META.allLetters.slice();
-      else return;
-      const openDetails = $('details.adv', container)?.open;
+      } else return;
       rerender();
-      if (openDetails) $('details.adv', container).open = true;
     };
     container.onchange = (e) => {
       const t = e.target;
@@ -474,7 +464,6 @@
     const active = f.categories.filter((c) => c.active).length;
     if (active < 2) return 'Activa al menos 2 categorías.';
     if (active > 15) return 'Máximo 15 categorías activas.';
-    if (f.letters.length < 3) return 'Selecciona al menos 3 letras.';
     return null;
   }
 
@@ -536,13 +525,13 @@
       if (err) return toast(err, true);
       const btn = $('#createBtn');
       btn.disabled = true;
-      const settings = { rounds: f.rounds, roundTime: f.roundTime, stopRequiresAll: f.stopRequiresAll, categories: f.categories, letters: f.letters };
+      const settings = { rounds: f.rounds, roundTime: f.roundTime, stopRequiresAll: f.stopRequiresAll, categories: f.categories };
       const res = await call('room:create', { name: f.name, avatar: f.avatar, settings });
       btn.disabled = false;
       if (!res.ok) return toast(res.error, true);
       LS.set('tf_name', f.name);
       LS.set('tf_avatar', f.avatar);
-      LS.set('tf_last_settings', settings);
+      LS.set('tf_last_settings_v2', settings);
       saveSession({ code: res.code, playerId: res.playerId, token: res.token });
       view = 'room';
       history.replaceState(null, '', `/?sala=${res.code}`);
@@ -637,7 +626,7 @@
           <div class="chips">
             <span class="chip">🔁 ${st.rounds} rondas</span>
             <span class="chip">⏱️ ${st.roundTime} s</span>
-            <span class="chip">🔤 ${st.letters.length} letras</span>
+            <span class="chip">🔤 Letra por turnos</span>
             ${st.stopRequiresAll ? '<span class="chip">🔴 ¡TIEMPO! con todo completo</span>' : ''}
           </div>
           <div class="chips" style="margin-top:10px">${activeCats.map((c) => `<span class="chip" style="background:color-mix(in srgb,var(--orange) 18%,var(--card2))">${esc(c.name)}</span>`).join('')}</div>
@@ -695,10 +684,10 @@
           $('#saveSet', b).onclick = async () => {
             const err = validateForm(f);
             if (err) return toast(err, true);
-            const settings = { rounds: f.rounds, roundTime: f.roundTime, stopRequiresAll: f.stopRequiresAll, categories: f.categories, letters: f.letters };
+            const settings = { rounds: f.rounds, roundTime: f.roundTime, stopRequiresAll: f.stopRequiresAll, categories: f.categories };
             const res = await call('room:settings', { settings });
             if (!res.ok) return toast(res.error, true);
-            LS.set('tf_last_settings', settings);
+            LS.set('tf_last_settings_v2', settings);
             closeModal();
             toast('Ajustes guardados');
           };
@@ -751,13 +740,111 @@
     render();
   }
 
+  // ---------- ELEGIR LETRA (por turnos) ----------
+  let chooseOverride = false;
+  let pickSel = '';
+  const HARD_LETTERS = 'KÑQWXYZ';
+  function renderChoosing() {
+    const chooser = playerById(S.chooserId);
+    const mine = S.chooserId === S.you;
+    const host = isHost();
+    const canPick = mine || (host && chooseOverride);
+    const id = `choose-${S.round}-${S.chooserId}-${canPick}`;
+    if (app.dataset.screen === id) return;
+    const used = new Set(S.usedLetters || []);
+    const name = chooser ? chooser.name : '';
+    setScreen(
+      id,
+      `<div class="narrow stack">
+        <div class="center"><div class="round-lbl">RONDA ${S.round + 1} DE ${S.totalRounds}</div></div>
+        <div class="chooser-card">
+          <div class="chooser-av">${esc(chooser ? chooser.avatar : '🎯')}</div>
+          <h2>${mine ? '¡Te toca elegir la letra!' : `Turno de ${esc(name)}`}</h2>
+        </div>
+        ${
+          canPick
+            ? `<div class="card stack">
+                <div class="pick-preview" id="pickPreview" aria-live="polite">${esc(pickSel) || '?'}</div>
+                <div class="pick-grid">${S.allLetters
+                  .map((l) => `<button type="button" class="pick ${HARD_LETTERS.includes(l) ? 'hard' : ''} ${pickSel === l ? 'sel' : ''}" data-pick="${l}" ${used.has(l) ? 'disabled title="Ya se jugó"' : ''}>${l}</button>`)
+                  .join('')}</div>
+                <div class="pick-type">
+                  <input class="input" id="typeLetter" maxlength="1" placeholder="O escríbela aquí" autocomplete="off" autocapitalize="characters" spellcheck="false" enterkeyhint="go" aria-label="Escribe una letra">
+                  <button type="button" class="btn small" id="randomPick" title="Elegir una al azar">🎲</button>
+                </div>
+                <button type="button" class="btn green block" id="confirmPick" ${pickSel ? '' : 'disabled'}>${pickSel ? `▶ JUGAR CON LA ${esc(pickSel)}` : 'ELIGE UNA LETRA'}</button>
+              </div>`
+            : `<div class="waiting card">⏳ ${esc(name)} está eligiendo la letra<span class="dots-anim"><span>.</span><span>.</span><span>.</span></span></div>
+               ${host ? '<button class="btn ghost block" id="overridePick">Elegir en su lugar</button>' : ''}`
+        }
+        ${used.size ? `<div class="chips used-letters"><span class="muted" style="font-weight:800">Ya jugadas:</span>${[...used].map((l) => `<span class="chip">${esc(l)}</span>`).join('')}</div>` : ''}
+      </div>`
+    );
+    if (!canPick) {
+      const ob = $('#overridePick');
+      if (ob)
+        ob.onclick = () => {
+          chooseOverride = true;
+          render();
+        };
+      return;
+    }
+    const select = (l) => {
+      l = String(l || '').toUpperCase().charAt(0);
+      if (!S.allLetters.includes(l)) return l && toast('Esa no es una letra válida', true);
+      if (used.has(l)) return toast(`La ${l} ya se jugó. Elige otra.`, true);
+      pickSel = l;
+      Sounds.play('pop');
+      $$('.pick').forEach((b) => b.classList.toggle('sel', b.dataset.pick === l));
+      const pv = $('#pickPreview');
+      pv.textContent = l;
+      pv.style.animation = 'none';
+      void pv.offsetWidth;
+      pv.style.animation = '';
+      const cb = $('#confirmPick');
+      cb.disabled = false;
+      cb.textContent = `▶ JUGAR CON LA ${l}`;
+    };
+    $$('.pick').forEach((b) => (b.onclick = () => select(b.dataset.pick)));
+    const ti = $('#typeLetter');
+    ti.oninput = () => {
+      const v = ti.value.trim();
+      if (v) select(v);
+      ti.value = '';
+    };
+    ti.onkeydown = (e) => {
+      if (e.key === 'Enter' && pickSel) {
+        e.preventDefault();
+        $('#confirmPick').click();
+      }
+    };
+    $('#randomPick').onclick = () => {
+      const free = S.allLetters.filter((l) => !used.has(l) && !HARD_LETTERS.includes(l));
+      const pool = free.length ? free : S.allLetters.filter((l) => !used.has(l));
+      select(pool[Math.floor(Math.random() * pool.length)]);
+    };
+    $('#confirmPick').onclick = async () => {
+      if (!pickSel) return;
+      const btn = $('#confirmPick');
+      btn.disabled = true;
+      const res = await call('letter:choose', { letter: pickSel });
+      if (!res.ok) {
+        toast(res.error, true);
+        btn.disabled = false;
+      }
+    };
+  }
+
   // ---------- CUENTA REGRESIVA ----------
   function renderStarting() {
     if (app.dataset.screen !== 'starting-' + S.round) {
+      const by = S.current && S.current.chosenBy ? playerById(S.current.chosenBy) : null;
       setScreen(
         'starting-' + S.round,
         `<div class="center" style="padding-top:40px"><div class="round-lbl">RONDA ${S.round} DE ${S.totalRounds}</div></div>
-         <div class="overlay"><div class="center"><div class="round-lbl" style="margin-bottom:10px">RONDA ${S.round} DE ${S.totalRounds}</div><div class="countdown" id="cd">3</div></div></div>`
+         <div class="overlay"><div class="center"><div class="round-lbl" style="margin-bottom:10px">RONDA ${S.round} DE ${S.totalRounds}</div>
+         ${by ? `<p class="chosen-by">${esc(by.avatar)} ${esc(by.name)} eligió la letra <b>${esc(S.current.letter)}</b></p>` : ''}
+         <div class="countdown" id="cd">3</div></div></div>`
       );
     }
   }
@@ -898,6 +985,11 @@
     accepted: { flag: '✅', txt: 'Aceptada por votación.' },
     rejected: { flag: '❌', txt: 'Rechazada por votación.' },
   };
+  const VALID = new Set(['ok', 'review', 'free', 'accepted']);
+  function statusText(a) {
+    if (a.judgedBy === 'host') return a.status === 'rejected' ? 'Anulada por el anfitrión: no suma puntos.' : 'Validada por el anfitrión.';
+    return STATUS_INFO[a.status].txt;
+  }
 
   function renderResults() {
     const r = S.lastResult;
@@ -927,7 +1019,7 @@
           <div class="q">⚖️ ¿<b>${esc(ans.text)}</b> es un/a ${esc(cat ? cat.name : '')} válido/a?<br><small>${esc(author ? author.name : '')} · ✅ ${yes} · ❌ ${no}</small></div>
           ${canVote ? `<button class="btn tiny ${myVote === true ? 'green' : ''}" data-vote="${esc(ch.key)}" data-v="1">✅ Válida</button>
                        <button class="btn tiny ${myVote === false ? 'danger' : ''}" data-vote="${esc(ch.key)}" data-v="0">❌ No válida</button>` : '<small><b>Tu respuesta está en votación</b></small>'}
-          ${host ? `<button class="btn tiny" data-closevote="${esc(ch.key)}">Cerrar</button>` : ''}
+          ${host ? `<div class="vote-actions"><button class="btn tiny green" data-judge="${esc(ch.key)}" data-v="1" title="Decisión del anfitrión">👑 Vale</button><button class="btn tiny danger" data-judge="${esc(ch.key)}" data-v="0" title="Decisión del anfitrión">👑 Anular</button></div>` : ''}
         </div>`;
       })
       .join('');
@@ -936,7 +1028,7 @@
       .map(
         ({ pid, c, a }) => `<div class="vote-card" style="background:var(--card2)">
         <div class="q">⚠️ <b>${esc(a.text)}</b> <small>(${esc(c.name)} · ${esc(playerById(pid)?.name || '')})</small><br><small>No reconocida: cuenta como válida</small></div>
-        <button class="btn tiny" data-challenge="${pid}|${c.id}">Impugnar</button></div>`
+        <div class="vote-actions">${host ? `<button class="btn tiny green" data-judge="${pid}|${c.id}" data-v="1">✅ Vale</button><button class="btn tiny danger" data-judge="${pid}|${c.id}" data-v="0">🗑️ Anular</button>` : `<button class="btn tiny" data-challenge="${pid}|${c.id}">Impugnar</button>`}</div></div>`
       )
       .join('');
 
@@ -965,7 +1057,7 @@
         .join('')}</tbody>
       <tfoot><tr><td>TOTAL RONDA</td>${r.players.map((pid) => `<td>${r.scores[pid] || 0}</td>`).join('')}</tr></tfoot>
     </table></div>
-    <div class="legend"><span><span class="pts p10">+10</span> única</span><span><span class="pts p5">+5</span> repetida</span><span><span class="pts p0">+0</span> inválida</span><span>⚠️ por revisar</span><span>⚖️ en votación</span><span>Toca una respuesta para impugnarla</span></div>`;
+    <div class="legend"><span><span class="pts p10">+10</span> única</span><span><span class="pts p5">+5</span> repetida</span><span><span class="pts p0">+0</span> inválida</span><span>⚠️ por revisar</span><span>⚖️ en votación</span><span>${host ? '👑 Toca una palabra para anularla o validarla' : 'Toca una respuesta para impugnarla'}</span></div>`;
 
     const ranking = rankingHTML(true);
 
@@ -989,7 +1081,7 @@
       <div class="${resultsTab === 'answers' ? '' : 'hidden'} stack">
         ${voteCards ? `<div class="votes">${voteCards}</div>` : ''}
         ${table}
-        ${reviewCards ? `<details class="adv review-box" ${reviewList.length <= 3 ? 'open' : ''}><summary>⚠️ Por revisar (${reviewList.length})</summary><div class="votes" style="margin-top:8px">${reviewCards}</div></details>` : ''}
+        ${reviewCards ? `<details class="adv review-box" ${host || reviewList.length <= 3 ? 'open' : ''}><summary>⚠️ Por revisar (${reviewList.length})</summary><div class="votes" style="margin-top:8px">${reviewCards}</div></details>` : ''}
       </div>
       <div class="${resultsTab === 'ranking' ? '' : 'hidden'}">${ranking}</div>
       <div class="host-bar">${hostBar}</div>`
@@ -1009,6 +1101,7 @@
     $$('[data-vote]').forEach((b) => (b.onclick = () => sendVote(b.dataset.vote, b.dataset.v === '1')));
     $$('[data-closevote]').forEach((b) => (b.onclick = async () => showErr(await call('challenge:close', { key: b.dataset.closevote }))));
     $$('[data-challenge]').forEach((b) => (b.onclick = () => openChallenge(b.dataset.challenge)));
+    $$('[data-judge]').forEach((b) => (b.onclick = () => judge(b.dataset.judge, b.dataset.v === '1')));
     $$('[data-cell]').forEach((b) => (b.onclick = () => cellDetail(b.dataset.cell)));
     if (host) {
       $('#nextBtn').onclick = async () => {
@@ -1033,6 +1126,13 @@
     else toast(res.error, true);
   }
 
+  async function judge(key, valid) {
+    const [playerId, catId] = key.split('|');
+    const res = await call('answer:judge', { playerId, catId, valid });
+    if (res.ok) toast(valid ? 'Palabra validada ✅' : 'Palabra anulada: no suma 🗑️');
+    else toast(res.error, true);
+  }
+
   function cellDetail(key) {
     const r = S.lastResult;
     const [pid, catId] = key.split('|');
@@ -1041,16 +1141,22 @@
     const p = playerById(pid);
     const cat = r.categories.find((c) => c.id === catId);
     const ch = r.challenges[key];
-    const info = STATUS_INFO[a.status];
     let action = '';
-    if (ch && ch.open) action = `<p>⚖️ Esta respuesta está en votación.</p>`;
-    else if (ch) action = `<p>${ch.outcome === 'accepted' ? '✅ Aceptada' : '❌ Rechazada'} por votación.</p>`;
-    else if (a.status !== 'bad_letter') action = `<button class="btn orange block" id="doChallenge">⚖️ Impugnar respuesta</button>`;
+    if (isHost()) {
+      // El anfitrión decide directamente: anular (no suma) o validar
+      action = `<div class="stack" style="gap:10px">
+        ${ch && ch.open ? '<p>⚖️ Esta respuesta está en votación. Tu decisión la cierra.</p>' : ''}
+        ${VALID.has(a.status) ? '<button class="btn danger block" id="doJudgeNo">🗑️ Anular palabra (no suma)</button>' : ''}
+        ${!VALID.has(a.status) ? '<button class="btn green block" id="doJudgeYes">✅ Validar palabra</button>' : ''}
+      </div>`;
+    } else if (ch && ch.open) action = `<p>⚖️ Esta respuesta está en votación.</p>`;
+    else if (ch) action = `<p>${ch.outcome === 'accepted' ? '✅ Aceptada' : '❌ Rechazada'}${ch.byHost ? ' por el anfitrión' : ' por votación'}.</p>`;
+    else if (a.judgedBy !== 'host' && a.status !== 'bad_letter') action = `<button class="btn orange block" id="doChallenge">⚖️ Impugnar respuesta</button>`;
     openModal(
       `<h2>${esc(cat ? cat.name : '')}</h2>
        <p style="font-family:var(--font-title);font-size:2rem;margin:6px 0">${esc(a.text)}</p>
        <p class="muted" style="font-weight:800">${esc(p ? p.avatar + ' ' + p.name : '')} · <span class="pts ${a.points === 10 ? 'p10' : a.points === 5 ? 'p5' : 'p0'}">+${a.points}</span>${a.shared ? ' (repetida)' : ''}</p>
-       <p>${info.txt}</p>${action}
+       <p>${statusText(a)}</p>${action}
        <div class="actions"><button class="btn ghost" data-close>Cerrar</button></div>`,
       {
         onMount: (b) => {
@@ -1059,6 +1165,18 @@
             btn.onclick = () => {
               closeModal();
               openChallenge(key);
+            };
+          const no = $('#doJudgeNo', b);
+          if (no)
+            no.onclick = () => {
+              closeModal();
+              judge(key, false);
+            };
+          const yes = $('#doJudgeYes', b);
+          if (yes)
+            yes.onclick = () => {
+              closeModal();
+              judge(key, true);
             };
         },
       }

@@ -66,12 +66,11 @@ async function main() {
         categories: [
           { id: 'nombre', active: true },
           { id: 'animal', active: true },
-          { id: 'fruta', active: true },
-          { id: 'pais', active: true },
+          { id: 'fruta_verdura', active: true },
+          { id: 'pais_ciudad', active: true },
           { id: 'c_abc123', name: 'Superhéroe', active: true },
           { id: 'cosa', active: false },
         ],
-        letters: ['A', 'B', 'C', 'M', 'P', 'S'],
       },
     });
     ok(created.ok && /^[A-Z0-9]{6}$/.test(created.code), `sala creada con código ${created.code}`);
@@ -116,18 +115,23 @@ async function main() {
     const sNo = await carlos.call('game:start');
     ok(!sNo.ok, 'solo el anfitrión inicia');
     ok((await juan.call('game:start')).ok, 'anfitrión inicia la partida');
-    let st = await juan.waitPhase('STARTING');
-    ok(st.current.letter === null, 'la letra se oculta durante la cuenta regresiva');
+    let st = await juan.waitPhase('CHOOSING_LETTER');
+    ok(st.chooserId === created.playerId, 'ronda 1: le toca elegir la letra a Juan (primer jugador)');
+    ok(!(await carlos.call('letter:choose', { letter: 'M' })).ok, 'otro jugador no puede elegir la letra');
+    ok(!(await juan.call('letter:choose', { letter: '7' })).ok, 'un carácter que no es letra es rechazado');
+    ok((await juan.call('letter:choose', { letter: 'm' })).ok, 'Juan escribe la letra "m"');
+    st = await juan.waitPhase('STARTING');
+    ok(st.current.letter === 'M' && st.current.chosenBy === created.playerId, 'cuenta regresiva muestra la letra M elegida por Juan');
     st = await juan.waitPhase('PLAYING');
     const L = st.current.letter;
-    ok(['A', 'B', 'C', 'M', 'P', 'S'].includes(L), `LETRA de la ronda 1: ${L}`);
-    ok(st.current.categories.map((c) => c.name).join(',') === 'Nombre,Animal,Fruta,País,Superhéroe', 'categorías activas en orden');
+    ok(L === 'M', `LETRA de la ronda 1: ${L}`);
+    ok(st.current.categories.map((c) => c.name).join(',') === 'Nombre,Animal,Fruta o Verdura,País o Ciudad,Superhéroe', 'categorías activas en orden');
 
     console.log('\n5) RESPUESTAS');
     const A = (dict, skip) => wordFor(dict, L, skip);
-    const ansJuan = { nombre: A('nombre'), animal: A('animal'), fruta: A('fruta'), pais: A('pais'), c_abc123: L + 'uperman' };
-    const ansCarlos = { nombre: A('nombre', 1), animal: A('animal'), fruta: 'Zanahoria', pais: '', c_abc123: L + 'atmanx' };
-    const ansMaria = { nombre: A('nombre', 2), animal: L + 'qwertyanimal', fruta: A('fruta', 1), pais: A('pais', 1), c_abc123: '' };
+    const ansJuan = { nombre: A('nombre'), animal: A('animal'), fruta_verdura: A('verdura'), pais_ciudad: A('ciudad'), c_abc123: L + 'uperman' };
+    const ansCarlos = { nombre: A('nombre', 1), animal: A('animal'), fruta_verdura: 'Zanahoria', pais_ciudad: '', c_abc123: L + 'atmanx' };
+    const ansMaria = { nombre: A('nombre', 2), animal: L + 'qwertyanimal', fruta_verdura: A('fruta', 1), pais_ciudad: A('pais', 1), c_abc123: '' };
     carlos.emit('answers:update', { answers: ansCarlos });
     maria2.emit('answers:update', { answers: ansMaria });
     await sleep(150);
@@ -154,8 +158,10 @@ async function main() {
     ok(a(C, 'nombre').text !== 'TRAMPA', 'no se aceptan cambios después de ¡TIEMPO!');
     ok(a(J, 'nombre').points === 10, `Nombre único "${a(J, 'nombre').text}" → +10`);
     ok(a(J, 'animal').points === 5 && a(C, 'animal').points === 5, `Animal repetido "${a(J, 'animal').text}" → +5 cada uno`);
-    ok(a(C, 'fruta').status === 'bad_letter' && a(C, 'fruta').points === 0, 'Fruta con otra letra → 0');
-    ok(a(C, 'pais').status === 'empty' && a(C, 'pais').points === 0, 'Respuesta vacía → 0');
+    ok(a(J, 'fruta_verdura').status === 'ok' && a(M, 'fruta_verdura').status === 'ok', `"Fruta o Verdura" reconoce verdura (${a(J, 'fruta_verdura').text}) y fruta (${a(M, 'fruta_verdura').text})`);
+    ok(a(J, 'pais_ciudad').status === 'ok' && a(M, 'pais_ciudad').status === 'ok', `"País o Ciudad" reconoce ciudad (${a(J, 'pais_ciudad').text}) y país (${a(M, 'pais_ciudad').text})`);
+    ok(a(C, 'fruta_verdura').status === 'bad_letter' && a(C, 'fruta_verdura').points === 0, 'Fruta o Verdura con otra letra → 0');
+    ok(a(C, 'pais_ciudad').status === 'empty' && a(C, 'pais_ciudad').points === 0, 'Respuesta vacía → 0');
     ok(a(M, 'animal').status === 'review' && a(M, 'animal').points === 10, 'Palabra no reconocida NO se elimina: queda "por revisar" (+10 provisional)');
     ok(a(J, 'c_abc123').status === 'free' && a(J, 'c_abc123').points === 10, 'Categoría personalizada acepta respuestas');
     const sumJ = Object.values(r.answers[J]).reduce((s, x) => s + x.points, 0);
@@ -175,6 +181,19 @@ async function main() {
     await sleep(150);
     ok(juan.state.lastResult.challenges[`${J}|c_abc123`].outcome === 'accepted', 'empate 1-1 → se mantiene la respuesta');
 
+    console.log('\n8b) EL ANFITRIÓN ANULA UNA PALABRA MAL ESCRITA');
+    const before = juan.state.lastResult.scores[C];
+    ok(!(await carlos.call('answer:judge', { playerId: M, catId: 'nombre', valid: false })).ok, 'un jugador que no es anfitrión no puede anular');
+    ok((await juan.call('answer:judge', { playerId: C, catId: 'nombre', valid: false })).ok, 'Juan (anfitrión) anula el nombre de Carlos');
+    await sleep(150);
+    let rr = juan.state.lastResult;
+    ok(rr.answers[C].nombre.status === 'rejected' && rr.answers[C].nombre.points === 0, 'la palabra anulada vale 0');
+    ok(rr.scores[C] === before - 10, `el total de Carlos baja de ${before} a ${rr.scores[C]}`);
+    ok((await juan.call('answer:judge', { playerId: C, catId: 'fruta_verdura', valid: true })).ok, 'el anfitrión también puede validar una respuesta');
+    await sleep(150);
+    rr = juan.state.lastResult;
+    ok(rr.answers[C].fruta_verdura.points === 10, 'respuesta validada por el anfitrión suma +10');
+
     console.log('\n9) RANKING');
     const rank = [...juan.state.players].sort((x, y) => y.total - x.total);
     rank.forEach((p, i) => console.log(`     ${i + 1}. ${p.name} — ${p.total} pts (última ronda +${p.lastRound})`));
@@ -183,8 +202,14 @@ async function main() {
     console.log('\n10) SIGUIENTE RONDA');
     ok(!(await carlos.call('round:next')).ok, 'solo el anfitrión avanza');
     await juan.call('round:next');
+    st = await juan.waitPhase('CHOOSING_LETTER');
+    ok(st.chooserId === C, 'ronda 2: el turno de elegir pasa a Carlos');
+    ok(st.usedLetters.includes('M'), 'la M queda marcada como usada');
+    const reused = await carlos.call('letter:choose', { letter: 'M' });
+    ok(!reused.ok, 'no se puede repetir una letra: ' + reused.error);
+    ok((await carlos.call('letter:choose', { letter: 'P' })).ok, 'Carlos elige la P');
     st = await juan.waitPhase('PLAYING');
-    ok(st.round === 2 && st.current.letter !== L, `RONDA 2 DE 2 con nueva letra ${st.current.letter}`);
+    ok(st.round === 2 && st.current.letter === 'P', `RONDA 2 DE 2 con la letra ${st.current.letter}`);
     const L2 = st.current.letter;
     carlos.emit('answers:update', { answers: { nombre: wordFor('nombre', L2) } });
     console.log('     (esperando que el temporizador llegue a cero...)');

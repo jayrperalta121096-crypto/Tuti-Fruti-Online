@@ -84,9 +84,13 @@ function evaluate(text, letter, dictKey) {
   if (norm.charAt(0) !== l || norm.replace(/ /g, '').length < 2) {
     return { status: 'bad_letter', key: norm };
   }
-  if (!dictKey || !DICT_SETS[dictKey]) return { status: 'free', key: norm };
-  const canon = lookup(dictKey, norm);
-  if (canon) return { status: 'ok', key: canon };
+  // dictKey puede ser una lista (ej. "Fruta o Verdura" usa ['fruta','verdura'])
+  const keys = (Array.isArray(dictKey) ? dictKey : [dictKey]).filter((k) => k && DICT_SETS[k]);
+  if (!keys.length) return { status: 'free', key: norm };
+  for (const k of keys) {
+    const canon = lookup(k, norm);
+    if (canon) return { status: 'ok', key: canon };
+  }
   return { status: 'review', key: norm };
 }
 
